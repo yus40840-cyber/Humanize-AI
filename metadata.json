@@ -1,0 +1,6 @@
+{
+  "name": "Humanize-Text - Open Source Text Humanizer",
+  "description": "Text humanization pipeline featuring a 4-step translation chain with LLM rewriting to eliminate AI statistical fingerprints.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
