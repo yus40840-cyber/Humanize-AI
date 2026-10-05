@@ -67,12 +67,32 @@ export interface ShowcaseItem {
   whyWorked: string;
 }
 
+export type ReadabilityLevel = 'normal' | 'high_school' | 'university' | 'phd';
+
+export type WritingPurpose =
+  | 'general'
+  | 'academic'
+  | 'marketing'
+  | 'business'
+  | 'essay'
+  | 'legal'
+  | 'story'
+  | 'letter'
+  | 'report'
+  | 'blog';
+
+export type HumanizationMode = 'simple' | 'standard' | 'enhanced';
+
 export interface HumanizerConfig {
   provider: 'gemini' | 'deepseek' | 'openrouter' | 'atlascloud' | 'custom';
   model?: string;
   temperature: number;
   intermediateLang: 'fi' | 'de' | 'ko' | 'ja';
   targetLang: string;
+  tone?: 'casual' | 'natural' | 'conversational';
+  readability?: ReadabilityLevel;
+  purpose?: WritingPurpose;
+  humanizationMode?: HumanizationMode;
   mode?: 'ultra' | 'standard' | 'casual' | 'academic';
   deepseekApiKey?: string;
   openrouterApiKey?: string;

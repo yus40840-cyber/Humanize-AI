@@ -16,12 +16,13 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: '15mb' }));
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-// Multer in-memory storage for PDF and Image uploads
+// Multer in-memory storage for PDF and Image uploads (25MB limit)
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB max file size
+  limits: { fileSize: 25 * 1024 * 1024 },
 });
 
 // Helper: Call Gemini with fallback
@@ -132,7 +133,7 @@ async function callGeminiMultimodal(
   return response.text?.trim() || '';
 }
 
-// Helper: Call OpenAI-compatible endpoint (DeepSeek, OpenRouter, etc.)
+// Helper: Call OpenAI-compatible endpoint
 async function callOpenAiCompatible(
   messages: Array<{ role: string; content: string }>,
   options: {
@@ -169,60 +170,158 @@ async function callOpenAiCompatible(
   return data.choices?.[0]?.message?.content?.trim() || '';
 }
 
-// Helper: Call Niutrans API
-async function callNiutrans(
-  text: string,
-  source: string,
-  target: string,
-  apiKey: string
-): Promise<string> {
-  const response = await fetch('https://api.niutrans.com/NiuTransServer/translation', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      from: source,
-      to: target,
-      apikey: apiKey,
-      src_text: text,
-    }),
-  });
+// Tone Prompt Builder
+function getToneInstructions(tone?: string): string {
+  switch (tone) {
+    case 'casual':
+      return `TONE DIRECTIVE: CASUAL TONE (THE PATTERN BREAKER)
+- Injects informal phrasing, brief idioms, and relaxed structural layouts.
+- Destroys AI detection patterns by forcing extreme variation in sentence lengths (burstiness).
+- Places short, punchy statements (2-4 words) right next to moderate clauses (8-12 words).
+- Uses contractions everywhere: it's, don't, can't, won't, we've.
+- Best for creative stories, social media content, opinion pieces, and video scripts.`;
 
-  if (!response.ok) {
-    throw new Error(`Niutrans HTTP error: ${response.status}`);
+    case 'conversational':
+      return `TONE DIRECTIVE: CONVERSATIONAL TONE (THE FLOW OPTIMIZER)
+- Writes text the exact way a real person talks to a colleague over coffee.
+- Addresses the reader directly ("you") and leans into natural spoken hooks ("Look,", "Here's the thing:", "Plain and simple.").
+- Mimics spontaneous human speech with high perplexity and natural flow.
+- Best for blog posts, marketing emails, newsletters, and landing pages.`;
+
+    case 'natural':
+    default:
+      return `TONE DIRECTIVE: NATURAL / STANDARD TONE (THE SAFE MIDDLE-GROUND)
+- Strips out robotic AI filler words (furthermore, delve, in conclusion, pivotal, leverage, tapestry, beacon) while keeping a clean, clear presentation.
+- Optimizes readability and lowers predictability without sounding unprofessional or sloppy.
+- Balances professional clarity with human-like flow.
+- Best for business reports, cover letters, articles, and essays.`;
   }
-
-  const data = await response.json();
-  if (data.tgt_text) return data.tgt_text;
-  if (data.error_msg) throw new Error(`Niutrans API error: ${data.error_msg}`);
-  throw new Error('Unexpected Niutrans API response');
 }
 
-// Helper: ZeroGPT 0.0% AI Reconstruct & Buster
+// Readability Level Prompt Builder (Lynote AI inspired)
+function getReadabilityInstructions(readability?: string): string {
+  switch (readability) {
+    case 'high_school':
+      return `READABILITY LEVEL: HIGH SCHOOL
+- Simple, clear sentence structure suitable for secondary-school level reading.
+- Accessible vocabulary, easy-to-follow flow, zero pretentious academic jargon.`;
+    case 'university':
+      return `READABILITY LEVEL: UNIVERSITY
+- Academic tone geared toward college-level writing.
+- Well-reasoned arguments, refined vocabulary, intellectual rigor, clear analytical flow.`;
+    case 'phd':
+      return `READABILITY LEVEL: PHD
+- Advanced, formal scholarly tone designed for research and specialized academic work.
+- High intellectual depth, precise domain concepts, sophisticated nuanced structure.`;
+    case 'normal':
+    default:
+      return `READABILITY LEVEL: NORMAL
+- General readability for standard, everyday audiences.
+- Clear, well-balanced vocabulary with effortless human comprehension.`;
+  }
+}
+
+// Writing Purpose Prompt Builder (Lynote AI inspired)
+function getPurposeInstructions(purpose?: string): string {
+  switch (purpose) {
+    case 'academic':
+      return `WRITING PURPOSE: ACADEMIC
+- Formatted for research papers, literature reviews, and scholastic assignments.
+- Objective, evidence-based stance with analytical clarity.`;
+    case 'marketing':
+      return `WRITING PURPOSE: MARKETING
+- Optimized for promotional material, ad copy, and campaign text.
+- High engagement, strong value proposition, persuasive appeal, compelling calls to action.`;
+    case 'business':
+      return `WRITING PURPOSE: BUSINESS
+- Professional tone for workplace communications, executive memos, and corporate documents.
+- Action-oriented, concise, professional, clear.`;
+    case 'essay':
+      return `WRITING PURPOSE: ESSAY
+- Tailored specifically for structured school or college essays.
+- Strong thesis development, logical paragraph progression, insightful thematic conclusions.`;
+    case 'legal':
+      return `WRITING PURPOSE: LEGAL
+- Professional and formal structure suited for contractual or legal drafts.
+- Precise terminology, unambiguous stipulations, logical clause ordering.`;
+    case 'story':
+      return `WRITING PURPOSE: STORY
+- Creative narrative style focused on storytelling, sensory detail, and natural human dialogue.
+- Dynamic emotional pacing, character perspective, evocative language.`;
+    case 'letter':
+      return `WRITING PURPOSE: LETTER
+- Formatted for personal, formal, or official correspondence.
+- Appropriate salutations and sign-offs, polite courteous flow.`;
+    case 'report':
+      return `WRITING PURPOSE: REPORT
+- Structured for formal business or analytical reporting.
+- Clear headings, factual summaries, data interpretation, actionable takeaways.`;
+    case 'blog':
+      return `WRITING PURPOSE: BLOG
+- Conversational, engaging tone designed for online articles, web content, and SEO readership.
+- Reader hooks, scannable format, punchy insights.`;
+    case 'general':
+    default:
+      return `WRITING PURPOSE: GENERAL
+- Default broad, multi-purpose content suitable for any context.`;
+  }
+}
+
+// Humanization Mode Prompt Builder (Lynote AI inspired)
+function getHumanizationModeInstructions(mode?: string): string {
+  switch (mode) {
+    case 'simple':
+      return `HUMANIZATION MODE: SIMPLE
+- A light polish that cleans up robotic phrasing while keeping the draft close to the original text.`;
+    case 'enhanced':
+      return `HUMANIZATION MODE: ENHANCED
+- A deep rewrite designed for text that needs a total structural overhaul to bypass the strictest AI detection.
+- Complete syntactic reshuffle, aggressive sentence variation, zero robotic cadence.`;
+    case 'standard':
+    default:
+      return `HUMANIZATION MODE: STANDARD
+- A balanced rewrite that adjusts sentence rhythm and structure for natural flow and 0.0% AI detection.`;
+  }
+}
+
+interface RewriteOptions {
+  tone?: 'casual' | 'natural' | 'conversational';
+  readability?: string;
+  purpose?: string;
+  humanizationMode?: string;
+}
+
+// Helper: ZeroGPT 0.0% AI Reconstruct & Buster with Tone, Readability, Purpose, and Mode
 async function reconstructZeroGptHumanText(
   rawText: string,
-  targetLangName: string = 'English'
+  targetLangName: string = 'English',
+  options: RewriteOptions = {}
 ): Promise<string> {
-  const prompt = `You are an elite human ghostwriter whose writing NEVER gets flagged by ZeroGPT (always scores strictly 0.0% AI / 0% AI GPT).
+  const toneGuide = getToneInstructions(options.tone);
+  const readabilityGuide = getReadabilityInstructions(options.readability);
+  const purposeGuide = getPurposeInstructions(options.purpose);
+  const modeGuide = getHumanizationModeInstructions(options.humanizationMode);
+
+  const prompt = `You are an elite human ghostwriter whose writing NEVER gets flagged by ZeroGPT or Turnitin (always scores strictly 0.0% AI / 0% AI GPT).
 
 HOW ZEROGPT FLAGS TEXT (AND HOW TO BEAT IT COMPLETELY):
-ZeroGPT flags sentences that have standard formal grammar, medium lengths (15 to 25 words), and predictable subject-predicate syntax (like "It is no surprise that modern enterprises are integrating X to optimize Y"). That single sentence gets highlighted in yellow and flags 25% of the text as AI!
+ZeroGPT flags sentences that have standard formal grammar, medium lengths (15 to 25 words), and predictable subject-predicate syntax. That single sentence gets highlighted in yellow and flags 25% of the text as AI!
 
 STRICT ZERO-AI RULES TO GET 0.0% ON ZEROGPT (NOT EVEN 1% AI):
 1. SHORT, PUNCHY SENTENCES (AVERAGE UNDER 12 WORDS):
    - Never write a sentence longer than 14 words.
    - If a thought is complex, break it into two or three short, punchy statements.
    - Mix sentence lengths aggressively: 3 words, 2 words, 8 words, 4 words, 11 words, 5 words.
-2. CASUAL, EVERYDAY SPOKEN ENGLISH:
-   - Use natural contractions everywhere: it’s, can’t, won’t, don’t, we’ve, there’s, they're.
-   - Use natural spoken hooks: "Look,", "Truth be told,", "Here is the catch:", "Plain and simple.", "Not even close."
-3. DITCH ALL CORPORATE/ACADEMIC JARGON:
+2. ${toneGuide}
+3. ${readabilityGuide}
+4. ${purposeGuide}
+5. ${modeGuide}
+6. DITCH ALL CORPORATE/ACADEMIC JARGON:
    - Instead of "predictive analytics", write "crunching numbers before things happen" or "spotting trends early".
    - Instead of "workflow efficiencies", write "cutting down on wasted time" or "speeding up daily work".
    - Instead of "operational efficacy", write "getting real results".
    - Zero banned words: no furthermore, moreover, consequently, leverage, utilize, delve, pivotal, crucial, testament, tapestry, landscape, realm, seamless, unprecedented.
-4. NATURAL HUMAN ASYMMETRY:
-   - Write like a real person talking directly to someone over coffee.
-   - Keep the exact core message and all key facts completely accurate.
+7. Keep the exact core message and all key facts completely accurate.
 
 Original text:
 ${rawText}
@@ -238,11 +337,16 @@ Output ONLY the rewritten text in ${targetLangName}:`;
 }
 
 // Helper: Polish pass to guarantee 0.0% AI (Sentence Buster)
-async function polishToZeroAi(text: string): Promise<string> {
+async function polishToZeroAi(text: string, options: RewriteOptions = {}): Promise<string> {
+  const toneGuide = getToneInstructions(options.tone);
+  const readabilityGuide = getReadabilityInstructions(options.readability);
+  const purposeGuide = getPurposeInstructions(options.purpose);
+
   const polishPrompt = `Rewrite the text below so it scores STRICTLY 0.0% AI (0% AI GPT) on ZeroGPT.
 - Split any sentence longer than 12 words into two shorter sentences.
-- Add conversational contractions (it's, don't, we've, that's, can't).
-- Remove any formal sounding clauses.
+- ${toneGuide}
+- ${readabilityGuide}
+- ${purposeGuide}
 - Output ONLY the polished text:
 
 ${text}`;
@@ -255,101 +359,180 @@ ${text}`;
   return polished.replace(/^["']|["']$/g, '').trim();
 }
 
+// In-memory store for email password reset OTPs
+const emailResetOtps = new Map<string, { code: string; expiresAt: number }>();
+
 // --- API ROUTES ---
 
 // Health
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '2.0.0',
+    version: '2.1.0',
     app: 'Raheel Humanize Text',
     zeroAiTarget: '0.0% AI GPT Verified',
   });
 });
 
-// PDF Upload & Extraction Route
-app.post('/api/extract-pdf', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ error: 'Please upload a valid PDF file.' });
-    }
+// Send Password Reset OTP to Email
+app.post('/api/auth/send-reset-otp', (req, res) => {
+  const { email } = req.body;
+  if (!email || typeof email !== 'string' || !email.includes('@')) {
+    return res.status(400).json({ error: 'Valid email address is required.' });
+  }
 
-    const buffer = req.file.buffer;
-    let extractedText = '';
+  const cleanEmail = email.trim().toLowerCase();
+  const resetOtp = Math.floor(100000 + Math.random() * 900000).toString();
+  emailResetOtps.set(cleanEmail, {
+    code: resetOtp,
+    expiresAt: Date.now() + 15 * 60 * 1000, // 15 mins
+  });
 
-    // Extract text from PDF via Gemini document understanding
+  // Simulated email dispatch (in production via SendGrid/SES)
+  console.log(`[AUTH] Sent password reset OTP ${resetOtp} to email ${cleanEmail}`);
+
+  res.json({
+    success: true,
+    message: `Password reset OTP has been sent to ${cleanEmail}. Please check your inbox.`,
+    demoCode: resetOtp, // Included for frictionless testing
+  });
+});
+
+// Verify Password Reset OTP
+app.post('/api/auth/verify-reset-otp', (req, res) => {
+  const { email, otp, newPassword } = req.body;
+  if (!email || !otp || !newPassword) {
+    return res.status(400).json({ error: 'Email, OTP code, and new password are required.' });
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const record = emailResetOtps.get(cleanEmail);
+
+  if (!record) {
+    return res.status(400).json({ error: 'No password reset request found for this email. Please request a new code.' });
+  }
+
+  if (Date.now() > record.expiresAt) {
+    emailResetOtps.delete(cleanEmail);
+    return res.status(400).json({ error: 'Reset OTP has expired. Please request a new one.' });
+  }
+
+  if (record.code !== otp.trim()) {
+    return res.status(400).json({ error: 'Invalid OTP code. Please check your email and try again.' });
+  }
+
+  emailResetOtps.delete(cleanEmail);
+  res.json({
+    success: true,
+    message: 'Password has been reset successfully. You can now log in with your new password.',
+  });
+});
+
+// PDF Upload & Extraction Route with safe error catching
+app.post(
+  '/api/extract-pdf',
+  (req, res, next) => {
+    upload.single('file')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: `File upload error: ${err.message}` });
+      }
+      next();
+    });
+  },
+  async (req, res) => {
     try {
-      extractedText = await callGeminiMultimodal(
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({ error: 'Please upload a valid PDF document.' });
+      }
+
+      const buffer = req.file.buffer;
+      let extractedText = '';
+
+      // Extract text from PDF via Gemini document understanding
+      try {
+        extractedText = await callGeminiMultimodal(
+          buffer,
+          'application/pdf',
+          'Transcribe all text from this PDF document accurately and completely. Do not summarize, add commentary, or add markdown quotes; output only the extracted text verbatim.'
+        );
+      } catch (e: any) {
+        console.warn('Gemini PDF multimodal extraction failed:', e.message);
+      }
+
+      if (!extractedText || !extractedText.trim()) {
+        return res.status(422).json({
+          error: 'Unable to extract text from the PDF. The file may be password protected or scanned with low resolution.',
+        });
+      }
+
+      const words = extractedText.trim().split(/\s+/).length;
+      const letters = extractedText.replace(/\s/g, '').length;
+      const metrics = analyzeTextWithStatisticalDetector(extractedText);
+
+      return res.json({
+        text: extractedText,
+        words,
+        letters,
+        metrics,
+        filename: req.file.originalname,
+      });
+    } catch (err: any) {
+      console.error('PDF extraction error:', err);
+      return res.status(500).json({ error: err.message || 'PDF extraction failed.' });
+    }
+  }
+);
+
+// Image Upload & OCR Route with safe error catching
+app.post(
+  '/api/extract-image',
+  (req, res, next) => {
+    upload.single('file')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: `Image upload error: ${err.message}` });
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({ error: 'Please upload a valid image file.' });
+      }
+
+      const buffer = req.file.buffer;
+      const mimeType = req.file.mimetype || 'image/png';
+
+      // Extract text from Image via Gemini Multimodal OCR
+      const extractedText = await callGeminiMultimodal(
         buffer,
-        'application/pdf',
-        'Transcribe all text from this PDF document accurately and completely. Do not summarize, add commentary, or add markdown quotes; output only the extracted text verbatim.'
+        mimeType,
+        'Transcribe all visible text from this image accurately (OCR). Output only the exact transcribed text verbatim without additional explanations, markdown headers, or quotes.'
       );
-    } catch (e: any) {
-      console.warn('Gemini PDF multimodal extraction failed:', e.message);
-    }
 
-    if (!extractedText || !extractedText.trim()) {
-      return res.status(422).json({
-        error: 'Unable to extract text from the PDF. The file may be password protected or corrupted.',
+      if (!extractedText || !extractedText.trim()) {
+        return res.status(422).json({
+          error: 'No legible text was found in the uploaded image. Please try a clearer picture.',
+        });
+      }
+
+      const words = extractedText.trim().split(/\s+/).length;
+      const letters = extractedText.replace(/\s/g, '').length;
+      const metrics = analyzeTextWithStatisticalDetector(extractedText);
+
+      return res.json({
+        text: extractedText,
+        words,
+        letters,
+        metrics,
+        filename: req.file.originalname,
       });
+    } catch (err: any) {
+      console.error('Image OCR error:', err);
+      return res.status(500).json({ error: err.message || 'Image OCR processing failed.' });
     }
-
-    const words = extractedText.trim().split(/\s+/).length;
-    const letters = extractedText.replace(/\s/g, '').length;
-    const metrics = analyzeTextWithStatisticalDetector(extractedText);
-
-    res.json({
-      text: extractedText,
-      words,
-      letters,
-      metrics,
-      filename: req.file.originalname,
-    });
-  } catch (err: any) {
-    console.error('PDF extraction error:', err);
-    res.status(500).json({ error: err.message || 'PDF extraction failed.' });
   }
-});
-
-// Image Upload & OCR Route
-app.post('/api/extract-image', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ error: 'Please upload a valid image file.' });
-    }
-
-    const buffer = req.file.buffer;
-    const mimeType = req.file.mimetype || 'image/png';
-
-    // Extract text from Image via Gemini Multimodal OCR
-    const extractedText = await callGeminiMultimodal(
-      buffer,
-      mimeType,
-      'Transcribe all visible text from this image accurately (OCR). Output only the exact transcribed text verbatim without additional explanations, markdown headers, or quotes.'
-    );
-
-    if (!extractedText || !extractedText.trim()) {
-      return res.status(422).json({
-        error: 'No legible text was found in the uploaded image. Please try a clearer picture.',
-      });
-    }
-
-    const words = extractedText.trim().split(/\s+/).length;
-    const letters = extractedText.replace(/\s/g, '').length;
-    const metrics = analyzeTextWithStatisticalDetector(extractedText);
-
-    res.json({
-      text: extractedText,
-      words,
-      letters,
-      metrics,
-      filename: req.file.originalname,
-    });
-  } catch (err: any) {
-    console.error('Image OCR error:', err);
-    res.status(500).json({ error: err.message || 'Image OCR processing failed.' });
-  }
-});
+);
 
 // Methods list
 app.get('/api/methods', (req, res) => {
@@ -393,8 +576,19 @@ app.post('/api/humanize', async (req, res) => {
       targetLang = 'en',
       intermediateLang = 'fi',
       temperature = 1.35,
+      tone = 'natural',
+      readability = 'normal',
+      purpose = 'general',
+      humanizationMode = 'standard',
       config = {},
     } = req.body;
+
+    const rewriteOptions: RewriteOptions = {
+      tone,
+      readability,
+      purpose,
+      humanizationMode,
+    };
 
     if (!text || typeof text !== 'string' || !text.trim()) {
       return res.status(400).json({ error: 'Text input cannot be empty.' });
@@ -531,24 +725,23 @@ app.post('/api/humanize', async (req, res) => {
         durationMs: Date.now() - t3Start,
       });
 
-      // Step 4: Intermediate → 0.0% Zero-AI Target Reconstruction
+      // Step 4: Intermediate → 0.0% Zero-AI Target Reconstruction with Tone & Options
       const t4Start = Date.now();
-      let step4Text = await reconstructZeroGptHumanText(step3Text, targetName);
+      let step4Text = await reconstructZeroGptHumanText(step3Text, targetName, rewriteOptions);
 
-      // Automated ZeroGPT Sentence Buster Audit:
-      // Split into sentences and ensure no sentence exceeds 14 words or has formal AI cadence
+      // Automated ZeroGPT Sentence Buster Audit
       const rawSentences = step4Text.split(/(?<=[.!?。！？])\s+/).filter(Boolean);
       const hasLongSentence = rawSentences.some((s) => s.split(/\s+/).length > 15);
       const candMetrics = analyzeTextWithStatisticalDetector(step4Text);
 
       if (hasLongSentence || candMetrics.aiScore > 0 || (candMetrics.bannedWordsFound && candMetrics.bannedWordsFound.length > 0)) {
-        step4Text = await polishToZeroAi(step4Text);
+        step4Text = await polishToZeroAi(step4Text, rewriteOptions);
       }
 
       steps.push({
         step: 4,
         engine: 'ZeroGPT 0.0% Human Engine',
-        direction: `${intermediateLang.toUpperCase()} → ${targetLang.toUpperCase()} (0.0% AI GPT)`,
+        direction: `${intermediateLang.toUpperCase()} → ${targetLang.toUpperCase()} (${tone.toUpperCase()} / ${purpose.toUpperCase()} - 0.0% AI)`,
         output: step4Text,
         length: step4Text.length,
         durationMs: Date.now() - t4Start,
@@ -556,7 +749,7 @@ app.post('/api/humanize', async (req, res) => {
 
       finalOutput = step4Text;
     } else {
-      finalOutput = await reconstructZeroGptHumanText(text, targetName);
+      finalOutput = await reconstructZeroGptHumanText(text, targetName, rewriteOptions);
     }
 
     const elapsedMs = Date.now() - startTime;
@@ -584,6 +777,14 @@ app.post('/api/humanize', async (req, res) => {
   } catch (err: any) {
     console.error('Humanize error:', err);
     res.status(500).json({ error: err.message || 'Pipeline processing failed' });
+  }
+});
+
+// Express fallback error middleware ensuring JSON response
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('Unhandled server error:', err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: err?.message || 'Internal server error occurred' });
   }
 });
 

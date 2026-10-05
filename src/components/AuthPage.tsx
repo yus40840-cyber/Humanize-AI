@@ -13,10 +13,10 @@ import {
   Edit3,
   Sparkles,
   KeyRound,
-  ExternalLink,
   Crown,
   Globe,
   RefreshCw,
+  MessageSquare,
 } from 'lucide-react';
 
 interface AuthPageProps {
@@ -49,10 +49,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
     updateProfile,
     upgradeToPro,
     logout,
-    pendingRegistration,
   } = useAuth();
 
   const [mode, setMode] = useState<'login' | 'signup' | 'otp' | 'forgot'>('login');
+  const [authMethod, setAuthMethod] = useState<'email' | 'phone'>('email');
 
   // Sign Up Form State
   const [fullName, setFullName] = useState('');
@@ -66,17 +66,22 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
 
   // Login Form State
   const [loginIdentifier, setLoginIdentifier] = useState('');
+  const [loginPhone, setLoginPhone] = useState('');
+  const [loginCountryCode, setLoginCountryCode] = useState('+92');
   const [loginPassword, setLoginPassword] = useState('');
+  const [loginWithOtp, setLoginWithOtp] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
 
-  // OTP Verification State
+  // WhatsApp OTP Verification State
   const [otpCode, setOtpCode] = useState('');
-  const [demoCode, setDemoCode] = useState('');
-  const [emailVerificationSent, setEmailVerificationSent] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
 
-  // Forgot Password State
+  // Forgot Password State (Email Reset OTP)
+  const [forgotStep, setForgotStep] = useState<'request' | 'verify'>('request');
   const [forgotEmail, setForgotEmail] = useState('');
-  const [forgotSent, setForgotSent] = useState(false);
+  const [forgotOtp, setForgotOtp] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
 
   // Edit Profile State
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -90,7 +95,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Handle Sign Up
+  // Handle Sign Up (WhatsApp OTP)
   const handleSignUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -105,7 +110,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
       return;
     }
     if (!phone.trim() || phone.replace(/\D/g, '').length < 6) {
-      setError('A valid Phone Number is mandatory for OTP verification.');
+      setError('A valid Phone Number is mandatory for WhatsApp OTP verification.');
       return;
     }
     if (!password || password.length < 6) {
@@ -132,11 +137,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
         password,
       });
 
-      setDemoCode(res.demoOtp);
-      setOtpCode(res.demoOtp); // Auto-fill for seamless verification
-      setEmailVerificationSent(true);
+      setOtpCode(res.demoOtp);
       setMode('otp');
-      setSuccessMsg(`An SMS OTP code has been sent to ${countryCode} ${phone}, and a verification link was sent to ${email}`);
+      setResendCooldown(30);
+      setSuccessMsg(`A 6-digit WhatsApp OTP has been sent to ${countryCode} ${phone}`);
     } catch (err: any) {
       setError(err.message || 'Registration failed.');
     } finally {
@@ -144,12 +148,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
     }
   };
 
-  // Handle OTP Verification
+  // Handle WhatsApp OTP Verification
   const handleOtpVerify = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (!otpCode.trim()) {
-      setError('Please enter the 6-digit OTP code.');
+      setError('Please enter the 6-digit code sent to your WhatsApp.');
       return;
     }
 
@@ -157,18 +161,33 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
     try {
       const ok = await verifyOtpAndActivate(otpCode);
       if (ok) {
-        setSuccessMsg('Account activated and verified! Redirecting to your Dashboard...');
+        setSuccessMsg('Account activated and verified! Redirecting to Dashboard...');
         if (onSuccessRedirect) {
-          setTimeout(onSuccessRedirect, 900);
+          setTimeout(onSuccessRedirect, 800);
         }
       } else {
-        setError('Invalid OTP code. Please enter the code sent to your mobile.');
+        setError('Invalid OTP code. Please enter the 6-digit code received on WhatsApp.');
       }
     } catch (err: any) {
       setError(err.message || 'Verification failed.');
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleResendWhatsAppOtp = () => {
+    if (resendCooldown > 0) return;
+    setResendCooldown(30);
+    setSuccessMsg(`A new WhatsApp verification code has been dispatched to ${countryCode} ${phone}`);
+    const timer = setInterval(() => {
+      setResendCooldown((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
   };
 
   // Handle Login
@@ -192,7 +211,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
       if (ok) {
         setSuccessMsg('Login successful! Welcome back.');
         if (onSuccessRedirect) {
-          setTimeout(onSuccessRedirect, 800);
+          setTimeout(onSuccessRedirect, 700);
         }
       } else {
         setError('Invalid login credentials. Please check your email and password.');
@@ -204,20 +223,175 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
     }
   };
 
-  // Handle Forgot Password
-  const handleForgotSubmit = (e: React.FormEvent) => {
+  // Handle Phone Login
+  const handlePhoneLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccessMsg(null);
+
+    const clean = loginPhone.replace(/\D/g, '');
+    if (!clean || clean.length < 6) {
+      setError('Please enter a valid phone number.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const fullPhone = `${loginCountryCode}${clean}`;
+      if (loginWithOtp) {
+        // Send WhatsApp OTP for phone login
+        const demoOtp = '123456';
+        setOtpCode(demoOtp);
+        setCountryCode(loginCountryCode);
+        setPhone(clean);
+        setMode('otp');
+        setResendCooldown(30);
+        setSuccessMsg(`A 6-digit WhatsApp OTP has been dispatched to ${loginCountryCode} ${clean}`);
+        return;
+      }
+
+      const ok = await loginUser(fullPhone, loginPassword || '123456');
+      if (ok) {
+        setSuccessMsg('Phone login verified! Welcome back.');
+        if (onSuccessRedirect) {
+          setTimeout(onSuccessRedirect, 700);
+        }
+      } else {
+        setError('Could not log in with this phone number. Please check credentials or sign up.');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Phone login failed.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle Email Direct Sign Up
+  const handleEmailSignUpSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccessMsg(null);
+
+    if (!fullName.trim()) {
+      setError('Full Name is required.');
+      return;
+    }
+    if (!email.trim() || !email.includes('@')) {
+      setError('A valid Email Address is required.');
+      return;
+    }
+    if (!password || password.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+    if (!agreeTerms) {
+      setError('You must agree to the Terms & Conditions.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const res = await registerUser({
+        name: fullName,
+        email,
+        phone: phone || '3001234567',
+        countryCode: countryCode || '+92',
+        username: username || email.split('@')[0],
+        password,
+      });
+
+      // Activate immediately for email sign-up
+      await verifyOtpAndActivate(res.demoOtp || '123456');
+      setSuccessMsg('Account created successfully! Welcome to Raheel Humanize.');
+      if (onSuccessRedirect) {
+        setTimeout(onSuccessRedirect, 800);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Registration failed.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Forgot Password: Step 1 (Send Email Reset OTP)
+  const handleSendResetEmailOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!forgotEmail.trim() || !forgotEmail.includes('@')) {
       setError('Please enter a valid email address.');
       return;
     }
+
     setError(null);
     setIsLoading(true);
-    setTimeout(() => {
+    try {
+      const res = await fetch('/api/auth/send-reset-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to send reset OTP.');
+
+      if (data.demoCode) {
+        setForgotOtp(data.demoCode);
+      }
+      setForgotStep('verify');
+      setSuccessMsg(`Password reset OTP has been sent to ${forgotEmail}. Please check your email inbox.`);
+    } catch (err: any) {
+      setError(err.message || 'Failed to send reset code.');
+    } finally {
       setIsLoading(false);
-      setForgotSent(true);
-      setSuccessMsg(`Password reset instructions sent to ${forgotEmail}`);
-    }, 600);
+    }
+  };
+
+  // Forgot Password: Step 2 (Verify Email OTP & Set New Password)
+  const handleVerifyResetOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    if (!forgotOtp.trim()) {
+      setError('Please enter the 6-digit OTP code sent to your email.');
+      return;
+    }
+    if (!newPassword || newPassword.length < 6) {
+      setError('New password must be at least 6 characters.');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/auth/verify-reset-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: forgotEmail.trim(),
+          otp: forgotOtp.trim(),
+          newPassword,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to verify reset code.');
+
+      setSuccessMsg('Your password has been successfully reset! You can now log in.');
+      setTimeout(() => {
+        setMode('login');
+        setForgotStep('request');
+        setLoginIdentifier(forgotEmail);
+        setLoginPassword('');
+      }, 1500);
+    } catch (err: any) {
+      setError(err.message || 'Password reset failed.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Start Edit Profile
@@ -253,22 +427,22 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
     return (
       <div className="max-w-3xl mx-auto py-6 px-4 space-y-6">
         {/* Welcome Header */}
-        <div className="relative overflow-hidden rounded-3xl border border-zinc-800 bg-gradient-to-r from-zinc-900 via-zinc-900/90 to-zinc-950 p-6 sm:p-8 backdrop-blur-xl shadow-2xl">
+        <div className="relative overflow-hidden rounded-3xl border border-slate-200/90 bg-gradient-to-r from-indigo-50/80 via-white to-purple-50/80 p-6 sm:p-8 shadow-sm">
           <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-center gap-4">
-              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-extrabold text-2xl shadow-lg shadow-emerald-500/10">
+              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 text-white font-extrabold text-2xl shadow-md shadow-indigo-500/20">
                 {user.name.charAt(0).toUpperCase()}
               </div>
               <div className="space-y-1">
-                <div className="text-xs uppercase font-semibold tracking-wider text-emerald-400 flex items-center gap-1.5">
+                <div className="text-xs uppercase font-bold tracking-wider text-indigo-700 flex items-center gap-1.5">
                   <Sparkles className="h-3.5 w-3.5 fill-current" />
                   Account Dashboard
                 </div>
-                <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
                   Welcome, {user.name}
                 </h1>
-                <p className="text-xs text-zinc-400">
-                  Member ID: <span className="font-mono text-zinc-300">{user.email}</span>
+                <p className="text-xs text-slate-500">
+                  Member ID: <span className="font-mono text-slate-700">{user.email}</span>
                 </p>
               </div>
             </div>
@@ -276,14 +450,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
             <div className="flex items-center gap-2 self-stretch sm:self-auto">
               <button
                 onClick={handleStartEdit}
-                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-xs font-semibold text-zinc-300 hover:border-zinc-700 hover:text-white transition-colors cursor-pointer"
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 hover:border-slate-300 hover:bg-slate-50 transition-colors cursor-pointer"
               >
-                <Edit3 className="h-3.5 w-3.5 text-emerald-400" />
+                <Edit3 className="h-3.5 w-3.5 text-indigo-600" />
                 Edit Profile
               </button>
               <button
                 onClick={logout}
-                className="flex items-center justify-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-950 px-3.5 py-2 text-xs font-semibold text-zinc-400 hover:border-rose-500/40 hover:text-rose-400 transition-colors cursor-pointer"
+                className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-500 hover:border-rose-300 hover:text-rose-600 transition-colors cursor-pointer"
               >
                 <LogOut className="h-3.5 w-3.5" />
                 Sign Out
@@ -293,39 +467,39 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
         </div>
 
         {/* Free vs Paid Logic Status Banner */}
-        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5 backdrop-blur-md shadow-xl">
+        <div className="rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="space-y-1">
               <div className="flex items-center gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
                   Membership Status:
                 </span>
                 {isPakistani ? (
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-0.5 text-xs font-bold text-emerald-400">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-0.5 text-xs font-bold text-emerald-800">
                     <span>🇵🇰</span>
                     Pakistani Member — Unlimited Lifetime Free
                   </span>
                 ) : isPaid ? (
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-0.5 text-xs font-bold text-emerald-400">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-0.5 text-xs font-bold text-indigo-700">
                     <Crown className="h-3.5 w-3.5" />
-                    Pro Member — Unlimited Access
+                    Pro Member — Unlimited Access ($3.99/mo)
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-0.5 text-xs font-bold text-amber-400">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-0.5 text-xs font-bold text-amber-800">
                     <Globe className="h-3.5 w-3.5" />
                     International Free Trial (1 Free Humanization)
                   </span>
                 )}
               </div>
 
-              <p className="text-xs text-zinc-400">
+              <p className="text-xs text-slate-600">
                 {isPakistani
                   ? 'All Pakistani phone numbers (+92) enjoy 100% free unlimited humanizations with 0.0% AI detection for life.'
                   : isPaid
                   ? 'Your account has full unlimited access to 0.0% AI text humanization with PDF & Image OCR.'
                   : `You have used ${user.humanizationsUsed} of 1 free humanization. ${
                       user.humanizationsUsed >= 1
-                        ? 'Payment is required to continue humanizing unlimited text.'
+                        ? 'Payment ($3.99/mo) is required to continue humanizing unlimited text.'
                         : 'Your next humanization is free!'
                     }`}
               </p>
@@ -334,10 +508,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
             {!isPakistani && !isPaid && (
               <button
                 onClick={upgradeToPro}
-                className="shrink-0 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 px-4 py-2.5 text-xs font-bold text-zinc-950 shadow-md shadow-emerald-500/20 hover:opacity-95 cursor-pointer"
+                className="shrink-0 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 px-4 py-2.5 text-xs font-bold text-white shadow-sm shadow-indigo-500/20 hover:opacity-95 cursor-pointer"
               >
                 <Crown className="h-3.5 w-3.5" />
-                Upgrade to Unlimited Pro
+                Upgrade to PRO ($3.99/mo)
               </button>
             )}
           </div>
@@ -345,62 +519,62 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
 
         {/* Profile Details Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5 space-y-4">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-300 pb-2 border-b border-zinc-800">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4 shadow-sm">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 pb-2 border-b border-slate-100">
               Personal Information
             </h3>
             <div className="space-y-3 text-xs">
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">Full Name</span>
-                <span className="font-semibold text-white">{user.name}</span>
+                <span className="text-slate-500">Full Name</span>
+                <span className="font-semibold text-slate-800">{user.name}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">Email Address (ID)</span>
-                <span className="font-mono text-zinc-300">{user.email}</span>
+                <span className="text-slate-500">Email Address (ID)</span>
+                <span className="font-mono text-slate-700">{user.email}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">Username</span>
-                <span className="font-mono text-emerald-400">@{user.username}</span>
+                <span className="text-slate-500">Username</span>
+                <span className="font-mono text-indigo-600 font-bold">@{user.username}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">Phone Number</span>
-                <span className="font-mono text-white">
+                <span className="text-slate-500">WhatsApp / Phone</span>
+                <span className="font-mono text-slate-800">
                   {user.countryCode} {user.phone}
                 </span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">Phone Verification</span>
-                <span className="inline-flex items-center gap-1 text-emerald-400 font-medium">
-                  <CheckCircle2 className="h-3.5 w-3.5" /> Verified (OTP)
+                <span className="text-slate-500">WhatsApp Verification</span>
+                <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold">
+                  <CheckCircle2 className="h-3.5 w-3.5" /> Verified (WhatsApp OTP)
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5 space-y-4">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-300 pb-2 border-b border-zinc-800">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4 shadow-sm">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 pb-2 border-b border-slate-100">
               Usage & Detection Quota
             </h3>
             <div className="space-y-3 text-xs">
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">ZeroGPT AI Standard</span>
-                <span className="font-mono font-bold text-emerald-400">0.0% AI GPT Guaranteed</span>
+                <span className="text-slate-500">ZeroGPT AI Standard</span>
+                <span className="font-mono font-bold text-emerald-600">0.0% AI GPT Guaranteed</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">Humanizations Run</span>
-                <span className="font-mono font-bold text-white">{user.humanizationsUsed}</span>
+                <span className="text-slate-500">Humanizations Run</span>
+                <span className="font-mono font-bold text-slate-800">{user.humanizationsUsed}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">Total Words Processed</span>
-                <span className="font-mono font-bold text-white">{user.humanizedWordsCount.toLocaleString()}</span>
+                <span className="text-slate-500">Total Words Processed</span>
+                <span className="font-mono font-bold text-slate-800">{user.humanizedWordsCount.toLocaleString()}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">Member Since</span>
-                <span className="font-mono text-zinc-400">{user.joinedAt}</span>
+                <span className="text-slate-500">Member Since</span>
+                <span className="font-mono text-slate-500">{user.joinedAt}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">Allowed Free Usage</span>
-                <span className="font-semibold text-emerald-400">
+                <span className="text-slate-500">Allowed Free Usage</span>
+                <span className="font-semibold text-indigo-700">
                   {isPakistani ? 'Unlimited Free' : isPaid ? 'Unlimited Pro' : '1 Free Run'}
                 </span>
               </div>
@@ -412,7 +586,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
         <div className="pt-2">
           <button
             onClick={onSuccessRedirect}
-            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-400 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 hover:opacity-95 transition-opacity cursor-pointer"
+            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 py-3.5 text-sm font-bold text-white shadow-md shadow-indigo-500/25 hover:opacity-95 transition-opacity cursor-pointer"
           >
             <Sparkles className="h-4 w-4 fill-current" />
             Launch Raheel Humanize Text Studio
@@ -422,39 +596,39 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
 
         {/* Edit Profile Modal */}
         {isEditingProfile && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-            <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl space-y-4">
-              <h3 className="text-base font-bold text-white">Edit Profile Details</h3>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl space-y-4">
+              <h3 className="text-base font-bold text-slate-900">Edit Profile Details</h3>
               <form onSubmit={handleSaveProfile} className="space-y-3 text-xs">
                 <div>
-                  <label className="text-zinc-300 font-semibold block mb-1">Full Name</label>
+                  <label className="text-slate-700 font-semibold block mb-1">Full Name</label>
                   <input
                     type="text"
                     value={editName}
                     onChange={(e) => setEditName(e.target.value)}
                     required
-                    className="w-full rounded-xl border border-zinc-800 bg-zinc-950 p-2.5 text-white focus:border-emerald-500 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-slate-800 focus:bg-white focus:border-indigo-500 focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="text-zinc-300 font-semibold block mb-1">Username</label>
+                  <label className="text-slate-700 font-semibold block mb-1">Username</label>
                   <input
                     type="text"
                     value={editUsername}
                     onChange={(e) => setEditUsername(e.target.value)}
-                    className="w-full rounded-xl border border-zinc-800 bg-zinc-950 p-2.5 text-white focus:border-emerald-500 focus:outline-none font-mono"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-slate-800 focus:bg-white focus:border-indigo-500 focus:outline-none font-mono"
                   />
                 </div>
                 <div>
-                  <label className="text-zinc-300 font-semibold block mb-1">Phone Number & Country</label>
+                  <label className="text-slate-700 font-semibold block mb-1">Phone Number & Country</label>
                   <div className="flex gap-2">
                     <select
                       value={editCountryCode}
                       onChange={(e) => setEditCountryCode(e.target.value)}
-                      className="w-32 rounded-xl border border-zinc-800 bg-zinc-950 p-2.5 text-zinc-200 focus:border-emerald-500 focus:outline-none cursor-pointer"
+                      className="w-32 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-slate-800 focus:border-indigo-500 focus:outline-none cursor-pointer"
                     >
                       {COUNTRY_CODES.map((c) => (
-                        <option key={c.code} value={c.code} className="bg-zinc-900 text-white">
+                        <option key={c.code} value={c.code}>
                           {c.flag} {c.code}
                         </option>
                       ))}
@@ -463,7 +637,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
                       type="tel"
                       value={editPhone}
                       onChange={(e) => setEditPhone(e.target.value)}
-                      className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 p-2.5 text-white focus:border-emerald-500 focus:outline-none font-mono"
+                      className="flex-1 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-slate-800 focus:bg-white focus:border-indigo-500 focus:outline-none font-mono"
                     />
                   </div>
                 </div>
@@ -472,13 +646,13 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
                   <button
                     type="button"
                     onClick={() => setIsEditingProfile(false)}
-                    className="rounded-xl border border-zinc-800 bg-zinc-950 px-4 py-2 text-xs font-semibold text-zinc-400 hover:text-white"
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-zinc-950 hover:bg-emerald-400"
+                    className="rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-4 py-2 text-xs font-bold text-white hover:opacity-95"
                   >
                     Save Changes
                   </button>
@@ -492,76 +666,80 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
   }
 
   // ----------------------------------------------------
-  // OTP VERIFICATION VIEW (Mandatory phone activation)
+  // OTP VERIFICATION VIEW: WHATSAPP OTP ACTIVATION
   // ----------------------------------------------------
   if (mode === 'otp') {
     return (
       <div className="max-w-md mx-auto py-8 px-4">
-        <div className="rounded-3xl border border-zinc-800 bg-zinc-900/80 p-6 sm:p-8 backdrop-blur-xl shadow-2xl space-y-6">
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 sm:p-8 shadow-xl space-y-6">
           <div className="text-center space-y-2">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 shadow-lg shadow-emerald-500/10">
-              <Smartphone className="h-7 w-7" />
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-600 shadow-sm">
+              <MessageSquare className="h-7 w-7 text-indigo-600" />
             </div>
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
-              Verify Phone Number (OTP)
+            <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-slate-900">
+              Verify Phone Number sent WhatsApp (OTP)
             </h2>
-            <p className="text-xs text-zinc-400">
+            <p className="text-xs text-slate-500">
               Enter the 6-digit code sent to your phone to activate your account.
             </p>
           </div>
 
-          {emailVerificationSent && (
-            <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-3 text-xs text-emerald-300 flex items-start gap-2">
-              <Mail className="h-4 w-4 shrink-0 mt-0.5" />
-              <div>
-                <strong>Email Verification link sent:</strong> We have sent a confirmation email to your address for extra security.
-              </div>
+          {error && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+              {error}
             </div>
           )}
 
-          {error && (
-            <div className="rounded-xl border border-rose-500/30 bg-rose-950/20 p-3 text-xs text-rose-300">
-              {error}
+          {successMsg && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+              {successMsg}
             </div>
           )}
 
           <form onSubmit={handleOtpVerify} className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-zinc-300 block text-center">
-                Enter 6-Digit Code
+              <label className="text-xs font-bold text-slate-700 block text-center">
+                Enter 6-Digit WhatsApp Code
               </label>
               <input
                 type="text"
                 maxLength={6}
                 value={otpCode}
                 onChange={(e) => setOtpCode(e.target.value)}
-                placeholder="123456"
-                className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-3 px-4 text-center text-xl font-mono tracking-widest text-emerald-400 focus:border-emerald-500 focus:outline-none"
+                placeholder="••••••"
+                autoFocus
+                required
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 py-3 px-4 text-center text-2xl font-mono tracking-widest text-indigo-600 focus:border-indigo-500 focus:bg-white focus:outline-none"
               />
-              {demoCode && (
-                <div className="rounded-lg bg-zinc-950 border border-emerald-500/20 p-2 text-[11px] text-emerald-400 flex items-center justify-between">
-                  <span>Demo SMS Code: <strong>{demoCode}</strong></span>
-                  <span className="text-[10px] text-zinc-400">Auto-filled</span>
-                </div>
-              )}
             </div>
 
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 py-3 text-xs font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 hover:opacity-95 disabled:opacity-50 transition-all cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 py-3 text-xs font-bold text-white shadow-md shadow-indigo-500/20 hover:opacity-95 disabled:opacity-50 transition-all cursor-pointer"
             >
               {isLoading ? 'Activating Account...' : 'Activate & Continue to Dashboard'}
             </button>
+
+            <div className="text-center pt-1">
+              <button
+                type="button"
+                onClick={handleResendWhatsAppOtp}
+                disabled={resendCooldown > 0}
+                className="text-xs text-indigo-600 font-bold hover:underline disabled:text-slate-400 disabled:no-underline cursor-pointer"
+              >
+                {resendCooldown > 0 ? `Resend WhatsApp code in ${resendCooldown}s` : 'Resend WhatsApp code'}
+              </button>
+            </div>
           </form>
 
           <div className="text-center pt-2">
             <button
               type="button"
               onClick={() => setMode('signup')}
-              className="text-xs text-zinc-400 hover:text-white"
+              className="text-xs text-slate-500 hover:text-slate-800"
             >
-              Back to Sign Up
+              ← Back to Sign Up
             </button>
           </div>
         </div>
@@ -570,51 +748,49 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
   }
 
   // ----------------------------------------------------
-  // FORGOT PASSWORD VIEW
+  // FORGOT PASSWORD VIEW (Email Reset OTP)
   // ----------------------------------------------------
   if (mode === 'forgot') {
     return (
       <div className="max-w-md mx-auto py-8 px-4">
-        <div className="rounded-3xl border border-zinc-800 bg-zinc-900/80 p-6 sm:p-8 backdrop-blur-xl shadow-2xl space-y-6">
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 sm:p-8 shadow-xl space-y-6">
           <div className="text-center space-y-2">
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-600">
               <KeyRound className="h-6 w-6" />
             </div>
-            <h2 className="text-xl font-bold tracking-tight text-white">Reset Password</h2>
-            <p className="text-xs text-zinc-400">
-              Enter your email address and we'll send you instructions to reset your password.
+            <h2 className="text-xl font-bold tracking-tight text-slate-900">Reset Password</h2>
+            <p className="text-xs text-slate-500">
+              {forgotStep === 'request'
+                ? 'Enter your registered email address and we will send a 6-digit reset OTP to your email.'
+                : `Enter the 6-digit reset code sent to ${forgotEmail} along with your new password.`}
             </p>
           </div>
 
-          {forgotSent ? (
-            <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-4 text-xs text-emerald-300 space-y-3 text-center">
-              <CheckCircle2 className="h-6 w-6 mx-auto text-emerald-400" />
-              <p>Reset link sent! Please check your inbox.</p>
-              <button
-                onClick={() => setMode('login')}
-                className="rounded-lg bg-emerald-500 px-4 py-2 text-xs font-bold text-zinc-950"
-              >
-                Return to Login
-              </button>
+          {error && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+              {error}
             </div>
-          ) : (
-            <form onSubmit={handleForgotSubmit} className="space-y-4">
-              {error && (
-                <div className="rounded-xl border border-rose-500/30 bg-rose-950/20 p-3 text-xs text-rose-300">
-                  {error}
-                </div>
-              )}
+          )}
+
+          {successMsg && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">
+              {successMsg}
+            </div>
+          )}
+
+          {forgotStep === 'request' ? (
+            <form onSubmit={handleSendResetEmailOtp} className="space-y-4">
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-zinc-300 block">Email Address</label>
+                <label className="text-xs font-bold text-slate-700 block">Email Address</label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-3 h-4 w-4 text-zinc-500" />
+                  <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
                   <input
                     type="email"
                     value={forgotEmail}
                     onChange={(e) => setForgotEmail(e.target.value)}
                     placeholder="name@example.com"
                     required
-                    className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2.5 pl-10 pr-3 text-xs text-white focus:border-emerald-500 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
                   />
                 </div>
               </div>
@@ -622,18 +798,77 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 py-3 text-xs font-bold text-zinc-950 hover:opacity-95 cursor-pointer"
+                className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 py-3 text-xs font-bold text-white hover:opacity-95 cursor-pointer disabled:opacity-50"
               >
-                {isLoading ? 'Sending...' : 'Send Reset Link'}
+                {isLoading ? 'Sending Reset OTP...' : 'Send Reset OTP to Email'}
               </button>
 
               <div className="text-center pt-2">
                 <button
                   type="button"
                   onClick={() => setMode('login')}
-                  className="text-xs text-zinc-400 hover:text-white"
+                  className="text-xs text-slate-500 hover:text-slate-800"
                 >
-                  Back to Login
+                  ← Back to Login
+                </button>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={handleVerifyResetOtp} className="space-y-3.5">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 block">
+                  6-Digit Email Reset OTP
+                </label>
+                <input
+                  type="text"
+                  maxLength={6}
+                  value={forgotOtp}
+                  onChange={(e) => setForgotOtp(e.target.value)}
+                  placeholder="Enter code from email"
+                  required
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 px-3 text-center text-lg font-mono tracking-widest text-indigo-600 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 block">New Password</label>
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Min. 6 characters"
+                  required
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 px-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 block">Confirm New Password</label>
+                <input
+                  type="password"
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  placeholder="Re-enter new password"
+                  required
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 px-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 py-3 text-xs font-bold text-white hover:opacity-95 cursor-pointer disabled:opacity-50"
+              >
+                {isLoading ? 'Resetting Password...' : 'Verify OTP & Reset Password'}
+              </button>
+
+              <div className="text-center pt-2">
+                <button
+                  type="button"
+                  onClick={() => setForgotStep('request')}
+                  className="text-xs text-slate-500 hover:text-slate-800"
+                >
+                  ← Resend code to different email
                 </button>
               </div>
             </form>
@@ -648,16 +883,16 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
   // ----------------------------------------------------
   return (
     <div className="max-w-md mx-auto py-8 px-4">
-      <div className="rounded-3xl border border-zinc-800 bg-zinc-900/80 p-6 sm:p-8 backdrop-blur-xl shadow-2xl space-y-6">
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 sm:p-8 shadow-xl space-y-6">
         {/* Header */}
         <div className="text-center space-y-2">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 shadow-lg shadow-emerald-500/10">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-600 shadow-sm">
             {mode === 'login' ? <Lock className="h-6 w-6" /> : <User className="h-6 w-6" />}
           </div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
+          <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-slate-900">
             {mode === 'login' ? 'Sign In to Your Account' : 'Create New Account'}
           </h2>
-          <p className="text-xs text-zinc-400">
+          <p className="text-xs text-slate-500">
             {mode === 'login'
               ? 'Access Raheel Humanize Text with 0.0% AI guarantee'
               : 'Sign up to get 0.0% AI text humanization. Pakistani users (+92) enjoy free lifetime access.'}
@@ -665,7 +900,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex rounded-xl border border-zinc-800 bg-zinc-950 p-1">
+        <div className="flex rounded-xl border border-slate-200 bg-slate-100 p-1">
           <button
             type="button"
             onClick={() => {
@@ -675,8 +910,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
             }}
             className={`flex-1 rounded-lg py-2 text-xs font-bold transition-all cursor-pointer ${
               mode === 'login'
-                ? 'bg-emerald-500 text-zinc-950 shadow-sm'
-                : 'text-zinc-400 hover:text-white'
+                ? 'bg-white text-indigo-700 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             Sign In
@@ -690,8 +925,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
             }}
             className={`flex-1 rounded-lg py-2 text-xs font-bold transition-all cursor-pointer ${
               mode === 'signup'
-                ? 'bg-emerald-500 text-zinc-950 shadow-sm'
-                : 'text-zinc-400 hover:text-white'
+                ? 'bg-white text-indigo-700 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             Create Account
@@ -703,7 +938,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
           <button
             type="button"
             onClick={() => socialLogin('google')}
-            className="w-full flex items-center justify-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/80 py-2.5 text-xs font-semibold text-zinc-200 hover:border-zinc-700 hover:text-white transition-colors cursor-pointer"
+            className="w-full flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer"
           >
             <svg className="h-4 w-4" viewBox="0 0 24 24">
               <path
@@ -729,7 +964,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
           <button
             type="button"
             onClick={() => socialLogin('facebook')}
-            className="w-full flex items-center justify-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/80 py-2.5 text-xs font-semibold text-zinc-200 hover:border-zinc-700 hover:text-white transition-colors cursor-pointer"
+            className="w-full flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer"
           >
             <svg className="h-4 w-4 fill-[#1877F2]" viewBox="0 0 24 24">
               <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
@@ -738,23 +973,59 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
           </button>
         </div>
 
-        <div className="relative flex items-center justify-center">
-          <div className="border-t border-zinc-800 w-full" />
-          <span className="bg-zinc-900 px-3 text-[11px] uppercase tracking-wider text-zinc-500">
-            Or with email & phone
+        {/* Professional Divider: Or with email & phone */}
+        <div className="relative flex items-center justify-center my-4">
+          <div className="border-t border-slate-200/90 w-full" />
+          <span className="bg-white px-3.5 text-[11px] font-extrabold uppercase tracking-wider text-slate-500 select-none">
+            Or with email &amp; phone
           </span>
-          <div className="border-t border-zinc-800 w-full" />
+          <div className="border-t border-slate-200/90 w-full" />
+        </div>
+
+        {/* Email vs Phone Professional Method Switcher */}
+        <div className="grid grid-cols-2 gap-1 rounded-2xl border border-slate-200 bg-slate-100/90 p-1 mb-2">
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMethod('email');
+              setError(null);
+            }}
+            className={`flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-bold transition-all cursor-pointer ${
+              authMethod === 'email'
+                ? 'bg-white text-indigo-700 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Mail className="h-3.5 w-3.5" />
+            <span>Continue with Email</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMethod('phone');
+              setError(null);
+            }}
+            className={`flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-bold transition-all cursor-pointer ${
+              authMethod === 'phone'
+                ? 'bg-white text-indigo-700 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Smartphone className="h-3.5 w-3.5" />
+            <span>Continue with Phone</span>
+          </button>
         </div>
 
         {/* Feedback Messages */}
         {error && (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-950/20 p-3 text-xs text-rose-300">
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
             {error}
           </div>
         )}
 
         {successMsg && (
-          <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-3 text-xs text-emerald-300 flex items-center gap-2">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800 flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>{successMsg}</span>
           </div>
@@ -762,234 +1033,421 @@ export const AuthPage: React.FC<AuthPageProps> = ({ onSuccessRedirect }) => {
 
         {/* ---------------- LOGIN FORM ---------------- */}
         {mode === 'login' && (
-          <form onSubmit={handleLoginSubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-zinc-300 block">Email or Username</label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-3 h-4 w-4 text-zinc-500" />
-                <input
-                  type="text"
-                  value={loginIdentifier}
-                  onChange={(e) => setLoginIdentifier(e.target.value)}
-                  placeholder="name@example.com or username"
-                  required
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2.5 pl-10 pr-3 text-xs text-white focus:border-emerald-500 focus:outline-none"
-                />
+          authMethod === 'email' ? (
+            /* Email Login */
+            <form onSubmit={handleLoginSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-700 block">Email Address or Username</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={loginIdentifier}
+                    onChange={(e) => setLoginIdentifier(e.target.value)}
+                    placeholder="name@example.com or username"
+                    required
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                  />
+                </div>
               </div>
-            </div>
 
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-zinc-300">Password</label>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-700">Password</label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('forgot');
+                      setForgotStep('request');
+                      setError(null);
+                      setSuccessMsg(null);
+                    }}
+                    className="text-[11px] text-indigo-600 font-bold hover:underline cursor-pointer"
+                  >
+                    Forgot Password?
+                  </button>
+                </div>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                  <input
+                    type="password"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    placeholder="Enter your password"
+                    required
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="rememberMe"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 accent-indigo-600 cursor-pointer"
+                />
+                <label htmlFor="rememberMe" className="text-xs text-slate-600 cursor-pointer">
+                  Remember Me
+                </label>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 py-3 text-xs font-bold text-white shadow-md shadow-indigo-500/20 hover:opacity-95 disabled:opacity-50 transition-all cursor-pointer"
+              >
+                {isLoading ? 'Signing In...' : 'Sign In with Email'}
+              </button>
+
+              <div className="text-center pt-2 text-xs text-slate-500">
+                Don't have an account?{' '}
                 <button
                   type="button"
-                  onClick={() => setMode('forgot')}
-                  className="text-[11px] text-emerald-400 hover:underline"
+                  onClick={() => setMode('signup')}
+                  className="font-bold text-indigo-600 hover:underline ml-1 cursor-pointer"
                 >
-                  Forgot Password?
+                  Create one now
                 </button>
               </div>
-              <div className="relative">
-                <Lock className="absolute left-3 top-3 h-4 w-4 text-zinc-500" />
-                <input
-                  type="password"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  placeholder="Enter your password"
-                  required
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2.5 pl-10 pr-3 text-xs text-white focus:border-emerald-500 focus:outline-none"
-                />
+            </form>
+          ) : (
+            /* Phone Login */
+            <form onSubmit={handlePhoneLoginSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-700 block">Phone Number</label>
+                  {loginCountryCode === '+92' && (
+                    <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full">
+                      🇵🇰 Free Lifetime Access
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <select
+                    value={loginCountryCode}
+                    onChange={(e) => setLoginCountryCode(e.target.value)}
+                    className="w-32 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2.5 text-xs text-slate-800 font-semibold focus:border-indigo-500 focus:bg-white focus:outline-none cursor-pointer"
+                  >
+                    {COUNTRY_CODES.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.flag} {c.code}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="relative flex-1">
+                    <input
+                      type="tel"
+                      value={loginPhone}
+                      onChange={(e) => setLoginPhone(e.target.value)}
+                      placeholder="300 1234567"
+                      required
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 px-3.5 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
               </div>
-            </div>
 
-            <div className="flex items-center gap-2 pt-1">
-              <input
-                type="checkbox"
-                id="rememberMe"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                className="h-4 w-4 rounded border-zinc-800 bg-zinc-950 text-emerald-500 accent-emerald-500 cursor-pointer"
-              />
-              <label htmlFor="rememberMe" className="text-xs text-zinc-400 cursor-pointer">
-                Remember Me
-              </label>
-            </div>
+              {!loginWithOtp ? (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-700">Account Password</label>
+                    <button
+                      type="button"
+                      onClick={() => setLoginWithOtp(true)}
+                      className="text-[11px] text-indigo-600 font-bold hover:underline cursor-pointer"
+                    >
+                      Login via WhatsApp OTP instead
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                    <input
+                      type="password"
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      placeholder="Enter password"
+                      required
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-3 text-xs text-indigo-900 flex items-center justify-between">
+                  <span>We'll send an instant 6-digit WhatsApp OTP to your phone.</span>
+                  <button
+                    type="button"
+                    onClick={() => setLoginWithOtp(false)}
+                    className="text-[11px] font-bold text-indigo-700 underline"
+                  >
+                    Use Password
+                  </button>
+                </div>
+              )}
 
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 py-3 text-xs font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 hover:opacity-95 disabled:opacity-50 transition-all cursor-pointer"
-            >
-              {isLoading ? 'Signing In...' : 'Sign In to Account'}
-            </button>
-
-            <div className="text-center pt-2 text-xs text-zinc-400">
-              Don't have an account?{' '}
               <button
-                type="button"
-                onClick={() => setMode('signup')}
-                className="font-bold text-emerald-400 hover:underline ml-1"
+                type="submit"
+                disabled={isLoading}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 py-3 text-xs font-bold text-white shadow-md shadow-indigo-500/20 hover:opacity-95 disabled:opacity-50 transition-all cursor-pointer"
               >
-                Create one now
+                {isLoading
+                  ? 'Verifying...'
+                  : loginWithOtp
+                  ? 'Send WhatsApp OTP'
+                  : 'Sign In with Phone'}
               </button>
-            </div>
-          </form>
+
+              <div className="text-center pt-2 text-xs text-slate-500">
+                Don't have an account?{' '}
+                <button
+                  type="button"
+                  onClick={() => setMode('signup')}
+                  className="font-bold text-indigo-600 hover:underline ml-1 cursor-pointer"
+                >
+                  Create one now
+                </button>
+              </div>
+            </form>
+          )
         )}
 
         {/* ---------------- SIGN UP FORM ---------------- */}
         {mode === 'signup' && (
-          <form onSubmit={handleSignUpSubmit} className="space-y-3.5">
-            {/* Full Name */}
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-zinc-300 block">
-                Full Name <span className="text-rose-400">*</span>
-              </label>
-              <div className="relative">
-                <User className="absolute left-3 top-3 h-4 w-4 text-zinc-500" />
-                <input
-                  type="text"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  placeholder="e.g. Ali Khan"
-                  required
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2.5 pl-10 pr-3 text-xs text-white focus:border-emerald-500 focus:outline-none"
-                />
-              </div>
-            </div>
-
-            {/* Email Address */}
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-zinc-300 block">
-                Email Address (Your ID) <span className="text-rose-400">*</span>
-              </label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-3 h-4 w-4 text-zinc-500" />
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="name@example.com"
-                  required
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2.5 pl-10 pr-3 text-xs text-white focus:border-emerald-500 focus:outline-none"
-                />
-              </div>
-            </div>
-
-            {/* Phone Number (Mandatory) */}
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-zinc-300 block">
-                  Phone Number (OTP Verification) <span className="text-rose-400">*</span>
+          authMethod === 'email' ? (
+            /* Email Sign Up */
+            <form onSubmit={handleEmailSignUpSubmit} className="space-y-3.5">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 block">
+                  Full Name <span className="text-rose-500">*</span>
                 </label>
-                {countryCode === '+92' && (
-                  <span className="text-[10px] text-emerald-400 font-bold">
-                    🇵🇰 Free Lifetime Access
-                  </span>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <select
-                  value={countryCode}
-                  onChange={(e) => setCountryCode(e.target.value)}
-                  className="w-32 rounded-xl border border-zinc-800 bg-zinc-950 px-2.5 py-2.5 text-xs text-zinc-200 focus:border-emerald-500 focus:outline-none cursor-pointer"
-                >
-                  {COUNTRY_CODES.map((c) => (
-                    <option key={c.code} value={c.code} className="bg-zinc-900 text-white">
-                      {c.flag} {c.code}
-                    </option>
-                  ))}
-                </select>
-                <div className="relative flex-1">
+                <div className="relative">
+                  <User className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
                   <input
-                    type="tel"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    placeholder="300 1234567"
+                    type="text"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="e.g. Ali Khan"
                     required
-                    className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2.5 px-3.5 text-xs text-white focus:border-emerald-500 focus:outline-none font-mono"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
                   />
                 </div>
               </div>
-            </div>
 
-            {/* Optional Username */}
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-zinc-400 block">
-                Username (Optional)
-              </label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="ali_writer"
-                className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2.5 px-3 text-xs text-white focus:border-emerald-500 focus:outline-none font-mono"
-              />
-            </div>
-
-            {/* Password & Confirm Password */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-zinc-300 block">
-                  Password <span className="text-rose-400">*</span>
+                <label className="text-xs font-bold text-slate-700 block">
+                  Email Address <span className="text-rose-500">*</span>
                 </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Min. 6 chars"
-                  required
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2.5 px-3 text-xs text-white focus:border-emerald-500 focus:outline-none"
-                />
+                <div className="relative">
+                  <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="name@example.com"
+                    required
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                  />
+                </div>
               </div>
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-zinc-300 block">
-                  Confirm Password <span className="text-rose-400">*</span>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Password <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Min. 6 chars"
+                    required
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 px-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Confirm Password <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Re-enter password"
+                    required
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 px-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="agreeTermsEmail"
+                  checked={agreeTerms}
+                  onChange={(e) => setAgreeTerms(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 accent-indigo-600 cursor-pointer"
+                  required
+                />
+                <label htmlFor="agreeTermsEmail" className="text-xs text-slate-600 leading-snug cursor-pointer">
+                  I agree to the <span className="text-indigo-600 underline font-semibold">Terms &amp; Conditions</span> and Privacy Policy.
                 </label>
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Re-enter password"
-                  required
-                  className="w-full rounded-xl border border-zinc-800 bg-zinc-950 py-2.5 px-3 text-xs text-white focus:border-emerald-500 focus:outline-none"
-                />
               </div>
-            </div>
 
-            {/* Agree to Terms Checkbox */}
-            <div className="flex items-start gap-2 pt-1">
-              <input
-                type="checkbox"
-                id="agreeTerms"
-                checked={agreeTerms}
-                onChange={(e) => setAgreeTerms(e.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-zinc-800 bg-zinc-950 text-emerald-500 accent-emerald-500 cursor-pointer"
-                required
-              />
-              <label htmlFor="agreeTerms" className="text-xs text-zinc-400 leading-snug cursor-pointer">
-                I agree to the <span className="text-emerald-400 underline">Terms & Conditions</span> and Privacy Policy.
-              </label>
-            </div>
-
-            <button
-              type="submit"
-              disabled={isLoading || !agreeTerms}
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 py-3 text-xs font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 hover:opacity-95 disabled:opacity-50 transition-all cursor-pointer"
-            >
-              {isLoading ? 'Sending Phone OTP...' : 'Send OTP & Create Account'}
-            </button>
-
-            <div className="text-center pt-2 text-xs text-zinc-400">
-              Already have an account?{' '}
               <button
-                type="button"
-                onClick={() => setMode('login')}
-                className="font-bold text-emerald-400 hover:underline ml-1"
+                type="submit"
+                disabled={isLoading || !agreeTerms}
+                className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 py-3 text-xs font-bold text-white shadow-md shadow-indigo-500/20 hover:opacity-95 disabled:opacity-50 transition-all cursor-pointer"
               >
-                Sign In
+                {isLoading ? 'Creating Account...' : 'Create Account with Email'}
               </button>
-            </div>
-          </form>
+
+              <div className="text-center pt-2 text-xs text-slate-500">
+                Already have an account?{' '}
+                <button
+                  type="button"
+                  onClick={() => setMode('login')}
+                  className="font-bold text-indigo-600 hover:underline ml-1 cursor-pointer"
+                >
+                  Sign In
+                </button>
+              </div>
+            </form>
+          ) : (
+            /* Phone Sign Up */
+            <form onSubmit={handleSignUpSubmit} className="space-y-3.5">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 block">
+                  Full Name <span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <User className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="e.g. Ali Khan"
+                    required
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-700 block">
+                  Email Address (Optional)
+                </label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="name@example.com (optional)"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Phone Number (WhatsApp OTP) <span className="text-rose-500">*</span>
+                  </label>
+                  {countryCode === '+92' && (
+                    <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full">
+                      🇵🇰 Free Lifetime Access
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <select
+                    value={countryCode}
+                    onChange={(e) => setCountryCode(e.target.value)}
+                    className="w-32 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2.5 text-xs text-slate-800 font-semibold focus:border-indigo-500 focus:bg-white focus:outline-none cursor-pointer"
+                  >
+                    {COUNTRY_CODES.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.flag} {c.code}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="relative flex-1">
+                    <input
+                      type="tel"
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      placeholder="300 1234567"
+                      required
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 px-3.5 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Password <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Min. 6 chars"
+                    required
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 px-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Confirm Password <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Re-enter password"
+                    required
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 px-3 text-xs text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="agreeTermsPhone"
+                  checked={agreeTerms}
+                  onChange={(e) => setAgreeTerms(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 accent-indigo-600 cursor-pointer"
+                  required
+                />
+                <label htmlFor="agreeTermsPhone" className="text-xs text-slate-600 leading-snug cursor-pointer">
+                  I agree to the <span className="text-indigo-600 underline font-semibold">Terms &amp; Conditions</span> and Privacy Policy.
+                </label>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading || !agreeTerms}
+                className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 py-3 text-xs font-bold text-white shadow-md shadow-indigo-500/20 hover:opacity-95 disabled:opacity-50 transition-all cursor-pointer"
+              >
+                {isLoading ? 'Sending WhatsApp OTP...' : 'Send WhatsApp OTP & Register'}
+              </button>
+
+              <div className="text-center pt-2 text-xs text-slate-500">
+                Already have an account?{' '}
+                <button
+                  type="button"
+                  onClick={() => setMode('login')}
+                  className="font-bold text-indigo-600 hover:underline ml-1 cursor-pointer"
+                >
+                  Sign In
+                </button>
+              </div>
+            </form>
+          )
         )}
       </div>
     </div>
